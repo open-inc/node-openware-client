@@ -1,0 +1,15 @@
+{
+  "name": "@openinc/openware-client",
+  "version": "0.1.0",
+  "description": "Client for open.WARE",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "prepublish": "npm run build"
+  },
+  "dependencies": {
+    "@types/amqplib": "^0.5.13",
+    "amqplib": "^0.5.5"
+  }
+}
