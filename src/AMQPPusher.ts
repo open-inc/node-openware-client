@@ -1,5 +1,6 @@
 import * as amqp from "amqplib";
 import { OpenwareDataItem, OpenwarePusherInterface } from ".";
+import { Waiter } from "./helper";
 
 export type AMQPPusherConnectionSettings = string | amqp.Options.Connect;
 
@@ -13,8 +14,7 @@ export interface AMQPPusherPublishSettings {
 export class AMQPPusher implements OpenwarePusherInterface {
   private connectionSettings: AMQPPusherConnectionSettings;
   private publishSettings: AMQPPusherPublishSettings;
-  private connection: amqp.Connection | null = null;
-  private channel: amqp.Channel | null = null;
+  private waiter = new Waiter<[amqp.Connection, amqp.Channel]>();
 
   constructor(
     connectionSettings: AMQPPusherConnectionSettings,
@@ -22,27 +22,27 @@ export class AMQPPusher implements OpenwarePusherInterface {
   ) {
     this.connectionSettings = connectionSettings;
     this.publishSettings = publishSettings;
+
+    this.initConnection();
   }
 
-  private async getChannel(): Promise<amqp.Channel> {
-    if (!this.connection || !this.channel) {
-      this.connection = await amqp.connect(this.connectionSettings);
-      this.channel = await this.connection.createChannel();
+  private async initConnection() {
+    const connection = await amqp.connect(this.connectionSettings);
+    const channel = await connection.createChannel();
 
-      const ok = await this.channel.assertExchange(
-        this.publishSettings.exchange,
-        this.publishSettings.exchangeType,
-        this.publishSettings.exchangeOptions
-      );
-    }
+    const ok = await channel.assertExchange(
+      this.publishSettings.exchange,
+      this.publishSettings.exchangeType,
+      this.publishSettings.exchangeOptions
+    );
 
-    return this.channel;
+    this.waiter.set([connection, channel]);
   }
 
   async publish(item: OpenwareDataItem) {
-    const channel = await this.getChannel();
+    const [, channel] = await this.waiter.get();
 
-    const ok = await channel.publish(
+    channel.publish(
       this.publishSettings.exchange,
       this.publishSettings.routingKey,
       Buffer.from(JSON.stringify(item))
@@ -50,11 +50,8 @@ export class AMQPPusher implements OpenwarePusherInterface {
   }
 
   async close() {
-    if (this.connection) {
-      await this.connection.close();
-    }
+    const [connection] = await this.waiter.get();
 
-    this.connection = null;
-    this.channel = null;
+    await connection.close();
   }
 }
