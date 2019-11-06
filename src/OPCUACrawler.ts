@@ -25,6 +25,7 @@ interface OPCUACrawlerOptions {
   idPrefix: string;
   namePrefix: string;
   blacklist: string[];
+  dry: boolean;
 }
 
 const defaults: OPCUACrawlerOptions = {
@@ -32,7 +33,8 @@ const defaults: OPCUACrawlerOptions = {
   source: "opcua",
   idPrefix: "opcua/",
   namePrefix: "OPC UA: ",
-  blacklist: []
+  blacklist: [],
+  dry: false
 };
 
 export class OPCUACrawler {
@@ -104,8 +106,11 @@ export class OPCUACrawler {
       const name: QualifiedName = node.browseName;
       const nodeClass: NodeClass = node.nodeClass;
 
-      console.log(id.toString(), name.toString());
-      return;
+      if (this.options.dry) {
+        console.log(id.toString(), name.toString());
+        return;
+      }
+
       if (this.options.blacklist.includes(id.toString())) {
         return;
       }
@@ -176,12 +181,12 @@ export class OPCUACrawler {
 
     // console.log(++i, id, name);
 
-    // this.pusher.publish(item).then(
-    //   ok => {},
-    //   error => {
-    //     console.error(error);
-    //   }
-    // );
+    this.pusher.publish(item).then(
+      ok => {},
+      error => {
+        console.error(error);
+      }
+    );
   }
 
   private mapDataValueToValue(dataValue: DataValue): any {
