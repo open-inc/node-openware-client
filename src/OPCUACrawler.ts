@@ -1,26 +1,23 @@
 import {
   OPCUAClient,
-  NodeCrawler,
   AttributeIds,
   ClientSubscription,
   TimestampsToReturn,
   ClientMonitoredItem,
   DataValue,
   NodeClass,
-  QualifiedName,
-  NodeId,
   ClientSession,
   VariantArrayType,
-  DataType
+  DataType,
+  BrowseDescriptionLike,
+  ReferenceDescription
 } from "node-opcua";
-
-let i = 0;
 
 import { OpenwarePusherInterface } from ".";
 import { OpenwareDataItem } from "./OpenwareDataItem";
 
 interface OPCUACrawlerOptions {
-  root: string;
+  root: BrowseDescriptionLike;
   source: string;
   idPrefix: string;
   namePrefix: string;
@@ -31,7 +28,7 @@ interface OPCUACrawlerOptions {
 const defaults: OPCUACrawlerOptions = {
   root: "ObjectsFolder",
   source: "opcua",
-  idPrefix: "opcua/",
+  idPrefix: "opcua~",
   namePrefix: "OPC UA: ",
   blacklist: [],
   dry: false
@@ -45,7 +42,8 @@ export class OPCUACrawler {
   private session: ClientSession | null = null;
   private subscription: ClientSubscription | null = null;
 
-  private nameCache = new Map<string, string>();
+  private log: string[] = [];
+  private ids: string[] = [];
 
   constructor(
     pusher: OpenwarePusherInterface,
@@ -88,48 +86,73 @@ export class OPCUACrawler {
           console.log("terminated");
         });
 
-      this.crawl();
+      await this.crawl(this.options.root);
+
+      console.log(this.log.join("\n"));
     } catch (err) {
       console.log("Err =", err);
     }
   }
 
-  async crawl() {
+  async crawl(root: BrowseDescriptionLike, depth: number = 0) {
     if (!this.session) {
       throw new Error("Session is unavailable.");
     }
 
-    const crawler = new NodeCrawler(this.session);
+    const browseResult = await this.session.browse(root);
 
-    crawler.on("browsed", (node: any) => {
-      const id: NodeId = node.nodeId;
-      const name: QualifiedName = node.browseName;
-      const nodeClass: NodeClass = node.nodeClass;
-
-      if (this.options.dry) {
-        console.log(id.toString(), name.toString());
-        return;
+    if (browseResult.references) {
+      for (const node of browseResult.references) {
+        await this.crawlHandler(node, depth);
       }
-
-      if (this.options.blacklist.includes(id.toString())) {
-        return;
-      }
-
-      this.nameCache.set(id.toString(), name.toString());
-
-      if (nodeClass === NodeClass.Variable) {
-        this.handleVariable(id);
-      }
-    });
-
-    crawler.read(this.options.root);
+    }
   }
 
-  async handleVariable(id: NodeId) {
-    this.installSubscription(id);
+  async crawlHandler(node: ReferenceDescription, depth: number) {
+    if (this.ids.includes(node.nodeId.toString())) {
+      return;
+    }
+
+    if (this.options.blacklist.includes(node.nodeId.toString())) {
+      return;
+    }
+
+    this.ids.push(node.nodeId.toString());
+
+    this.log.push(
+      "  ".repeat(depth) +
+        node.nodeId.toString() +
+        ": " +
+        node.displayName.text +
+        " (" +
+        node.nodeClass.toString() +
+        ")"
+    );
+
+    await this.crawl(
+      { nodeId: node.nodeId, referenceTypeId: "Organizes" },
+      depth + 1
+    );
+
+    await this.crawl(
+      { nodeId: node.nodeId, referenceTypeId: "HasComponent" },
+      depth + 1
+    );
+
+    if (this.options.dry) {
+      return;
+    }
+
+    if (node.nodeClass === NodeClass.Variable) {
+      this.installSubscription(node);
+    }
+
+    if (node.nodeClass === NodeClass.Unspecified) {
+      this.installSubscription(node);
+    }
   }
 
-  async installSubscription(nodeId: NodeId) {
+  async installSubscription(node: ReferenceDescription) {
     if (!this.subscription) {
       throw new Error("Session is unavailable.");
     }
@@ -137,7 +160,7 @@ export class OPCUACrawler {
     const monitoredItem = ClientMonitoredItem.create(
       this.subscription,
       {
-        nodeId,
+        nodeId: node.nodeId,
         attributeId: AttributeIds.Value
       },
       {
@@ -149,16 +172,16 @@ export class OPCUACrawler {
     );
 
     monitoredItem.on("changed", (dataValue: DataValue) => {
-      this.publishValue(nodeId, dataValue);
+      this.publishValue(node, dataValue);
     });
   }
 
-  async publishValue(nodeId: NodeId, dataValue: DataValue) {
-    const id = nodeId.toString();
-    const name = this.nameCache.get(id);
+  async publishValue(node: ReferenceDescription, dataValue: DataValue) {
+    const id = node.nodeId.toString();
+    const name = node.displayName.text;
 
     if (!name) {
-      throw new Error(`Name not found for Node '${id}'.`);
+      console.warn(`Name not found for Node '${id}'.`);
     }
 
     const item: OpenwareDataItem = {
@@ -178,8 +201,6 @@ export class OPCUACrawler {
         }
       ]
     };
-
-    // console.log(++i, id, name);
 
     this.pusher.publish(item).then(
       ok => {},
@@ -240,7 +261,7 @@ export class OPCUACrawler {
           return {
             name,
             type: "Boolean",
-            unit: "Date"
+            unit: ""
           };
 
         // case DataType.Null:
